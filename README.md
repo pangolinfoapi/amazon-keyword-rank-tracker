@@ -40,7 +40,7 @@ Sign up at [tool.pangolinfo.com](https://tool.pangolinfo.com) — open-source us
 ### 2. Install
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/amazon-keyword-rank-tracker.git
+git clone https://github.com/pangolinfoapi/amazon-keyword-rank-tracker.git
 cd amazon-keyword-rank-tracker
 pip install -r requirements.txt
 ```
@@ -158,5 +158,5 @@ generation, more marketplaces, multi-ASIN dashboards.
 
 ## License
 
-MIT © YOUR_NAME. Data provided by [Pangolinfo](https://www.pangolinfo.com);
+MIT © pangolinfo. Data provided by [Pangolinfo](https://www.pangolinfo.com);
 this project is not affiliated with or endorsed by Amazon.com, Inc.

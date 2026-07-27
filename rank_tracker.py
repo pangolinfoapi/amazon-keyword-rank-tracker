@@ -290,7 +290,7 @@ def cmd_report(_args) -> None:
     lines = [
         f"# Amazon Keyword Rank Report — {today}",
         "",
-        "Tracked with [amazon-keyword-rank-tracker](https://github.com/YOUR_GITHUB_USERNAME/amazon-keyword-rank-tracker) "
+        "Tracked with [amazon-keyword-rank-tracker](https://github.com/pangolinfoapi/amazon-keyword-rank-tracker) "
         "using the [Pangolinfo Scrape API](https://www.pangolinfo.com).",
         "",
         "## Latest vs previous",
