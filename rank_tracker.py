@@ -196,7 +196,13 @@ def cmd_run(args) -> None:
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     total, found = 0, 0
 
-    with PangolinfoClient(token=token) as client:
+    with PangolinfoClient(
+        token=token,
+        # The SDK's built-in default base URL is plain http:// and the API
+        # 301-redirects to https://, which the SDK's POST client does not
+        # follow — always pass the https URL explicitly.
+        base_url=os.environ.get("PANGOLIN_BASE_URL", "https://scrapeapi.pangolinfo.com"),
+    ) as client:
         for target in targets:
             asin = target["asin"].strip().upper()
             domain = target.get("domain", "www.amazon.com")
