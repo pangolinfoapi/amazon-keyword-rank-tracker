@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+.env
+
+# NOTE: targets.json, data/ and reports/ are intentionally committed —
+# they are your public tracking history, and the GitHub Actions workflow
+# needs targets.json + the SQLite history to compute trends.
