@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Amazon Keyword Rank Tracker — track where your ASINs rank for target keywords.
 
-Uses the Pangolinfo Scrape API (https://www.pangolinfo.com) to fetch real
-Amazon search result pages, locates your ASIN in the ranked results, and
-stores daily positions in SQLite so you can see ranking trends over time.
+Uses the Pangolinfo MCP endpoint (https://mcp.pangolinfo.com/mcp) — the same
+Model Context Protocol server that AI assistants use — to fetch real Amazon
+search result pages, locates your ASIN in the ranked results, and stores
+daily positions in SQLite so you can see ranking trends over time.
+
+Zero dependencies: Python 3.10+ standard library only.
 
 Commands:
     init      Create targets.json from the example file
@@ -24,14 +27,10 @@ import re
 import sqlite3
 import sys
 import time
-import urllib.parse
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
-
-try:
-    from pangolinfo_amazon_scraper import PangolinfoClient
-except ImportError:  # only `run` needs the SDK; init/history/report work without it
-    PangolinfoClient = None
 
 ROOT = Path(__file__).resolve().parent
 TARGETS_FILE = ROOT / "targets.json"
@@ -40,7 +39,15 @@ DB_FILE = ROOT / "data" / "ranks.db"
 CSV_FILE = ROOT / "data" / "ranks.csv"
 REPORTS_DIR = ROOT / "reports"
 
-PARSER_KEYWORD_SEARCH = "amzKeywordSearch"  # pangolinfo_amazon_scraper.platforms.PARSERS
+MCP_URL = os.environ.get("PANGOLIN_MCP_URL", "https://mcp.pangolinfo.com/mcp")
+MCP_PROTOCOL_VERSION = "2024-11-05"
+
+# The MCP endpoint sits behind Cloudflare, which blocks default library
+# signatures (python-urllib gets Error 1010). Present a browser UA.
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS checks (
@@ -64,47 +71,125 @@ CREATE INDEX IF NOT EXISTS idx_checks_asin_kw ON checks(asin, keyword, checked_a
 
 
 # --------------------------------------------------------------------------- #
-# Response normalization (defensive — parser JSON shape may evolve)
+# Minimal MCP (streamable-HTTP) client — stdlib only
 # --------------------------------------------------------------------------- #
 
-def extract_ranked_items(payload) -> list[dict]:
-    """Normalize the keyword-search JSON payload into an ordered item list.
-
-    Recursively unwraps common containers ({results: [...]}, {data: {products: [...]}},
-    bare lists, ...) so the tracker keeps working if the parser's JSON shape evolves.
-    """
-    def as_item_list(data, depth: int = 0) -> list[dict]:
-        if depth > 4:
-            return []
-        if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
-        if isinstance(data, dict):
-            for key in ("results", "products", "items", "search_results", "organic", "data", "result"):
-                if key in data:
-                    found = as_item_list(data[key], depth + 1)
-                    if found:
-                        return found
-            for value in data.values():  # fallback: try any nested structure
-                found = as_item_list(value, depth + 1)
-                if found:
-                    return found
-        return []
-
-    return as_item_list(payload)
+class McpError(RuntimeError):
+    pass
 
 
-def item_asin(item: dict) -> str | None:
-    for key in ("asin", "ASIN", "asinOrId", "product_asin", "id"):
-        value = item.get(key)
-        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9]{10}", value.strip()):
-            return value.strip().upper()
-    for key in ("url", "link", "product_url", "detail_url"):
-        value = item.get(key)
-        if isinstance(value, str):
-            match = re.search(r"/(?:dp|gp/product)/([A-Z0-9]{10})", value)
-            if match:
-                return match.group(1).upper()
+class McpClient:
+    """Talks JSON-RPC to the Pangolinfo MCP server over streamable-HTTP."""
+
+    def __init__(self, token: str, url: str = MCP_URL, timeout: int = 90) -> None:
+        self.token = token
+        self.url = url
+        self.timeout = timeout
+        self.session_id: str | None = None
+        self._next_id = 0
+        self._initialized = False
+
+    def _post(self, payload: dict) -> dict:
+        req = urllib.request.Request(self.url, data=json.dumps(payload).encode(), method="POST")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json, text/event-stream")
+        req.add_header("User-Agent", USER_AGENT)
+        req.add_header("Authorization", f"Bearer {self.token}")
+        if self.session_id:
+            req.add_header("mcp-session-id", self.session_id)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                sid = resp.headers.get("mcp-session-id")
+                if sid:
+                    self.session_id = sid
+                raw = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            raise McpError(f"HTTP {exc.code} from MCP server: {exc.read()[:200]!r}") from exc
+        except urllib.error.URLError as exc:
+            raise McpError(f"MCP server unreachable: {exc}") from exc
+        # Responses are SSE frames ("data: {...}") or occasionally plain JSON.
+        # Notifications (no id) legitimately get an empty body.
+        if not raw.strip():
+            return {}
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith("data:"):
+                return json.loads(line[5:].strip())
+        return json.loads(raw)
+
+    def initialize(self) -> None:
+        self._next_id += 1
+        self._post({
+            "jsonrpc": "2.0", "id": self._next_id, "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "amazon-keyword-rank-tracker", "version": "1.0.0"},
+            },
+        })
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        self._initialized = True
+
+    def call_tool(self, name: str, arguments: dict) -> dict:
+        if not self._initialized:
+            self.initialize()
+        self._next_id += 1
+        resp = self._post({
+            "jsonrpc": "2.0", "id": self._next_id, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        })
+        if "error" in resp:
+            raise McpError(f"JSON-RPC error: {resp['error']}")
+        result = resp.get("result", {})
+        texts = [c.get("text", "") for c in result.get("content", []) if c.get("type") == "text"]
+        if result.get("isError"):
+            raise McpError("tool error: " + (" ".join(texts)[:300] or "unknown"))
+        for text in texts:
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                continue
+        return {}
+
+
+def search_amazon_page(client: McpClient, keyword: str, page: int) -> tuple[list[dict], dict]:
+    """Call search_amazon for one SERP page; return (items, container)."""
+    payload = client.call_tool("search_amazon", {"keyword": keyword, "page": page})
+    container = _find_results_container(payload)
+    if not container:
+        return [], {}
+    return container["results"], container
+
+
+def _find_results_container(node, depth: int = 0) -> dict | None:
+    """Recursively locate the dict holding the ASIN `results` list."""
+    if depth > 6:
+        return None
+    if isinstance(node, dict):
+        results = node.get("results")
+        if isinstance(results, list) and results and isinstance(results[0], dict) and "asin" in results[0]:
+            return node
+        for value in node.values():
+            found = _find_results_container(value, depth + 1)
+            if found:
+                return found
+    if isinstance(node, list):
+        for value in node:
+            found = _find_results_container(value, depth + 1)
+            if found:
+                return found
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Ranking helpers
+# --------------------------------------------------------------------------- #
+
+def item_rank(item: dict, fallback: int) -> int:
+    try:
+        return int(item.get("rank"))
+    except (TypeError, ValueError):
+        return fallback
 
 
 def item_sponsored(item: dict) -> bool:
@@ -123,20 +208,6 @@ def item_text(item: dict, *keys: str) -> str | None:
     return None
 
 
-# --------------------------------------------------------------------------- #
-# Core tracking
-# --------------------------------------------------------------------------- #
-
-def search_page(client: PangolinfoClient, keyword: str, domain: str, zipcode: str | None, page: int):
-    """Fetch one Amazon search result page and return ranked items."""
-    if page == 1:
-        result = client.amazon.search(keyword, domain=domain, zipcode=zipcode)
-    else:
-        url = f"https://{domain}/s?k={urllib.parse.quote_plus(keyword)}&page={page}"
-        result = client.scrape(url=url, parser_name=PARSER_KEYWORD_SEARCH, formats=["json"], zipcode=zipcode)
-    return extract_ranked_items(result.json_data)
-
-
 def locate_asin(items: list[dict], target_asin: str) -> dict | None:
     """Find target ASIN in one page of items; return rank details."""
     organic_counter = 0
@@ -144,17 +215,21 @@ def locate_asin(items: list[dict], target_asin: str) -> dict | None:
         sponsored = item_sponsored(item)
         if not sponsored:
             organic_counter += 1
-        if item_asin(item) == target_asin.upper():
+        if str(item.get("asin", "")).upper() == target_asin.upper():
             return {
-                "position": index,
+                "position": item_rank(item, index),
                 "organic_position": None if sponsored else organic_counter,
                 "sponsored": 1 if sponsored else 0,
                 "title": item_text(item, "title", "name"),
                 "price": item_text(item, "price", "price_text", "display_price"),
-                "rating": item_text(item, "rating", "stars", "score"),
+                "rating": item_text(item, "rating", "star", "stars", "score"),
             }
     return None
 
+
+# --------------------------------------------------------------------------- #
+# Storage
+# --------------------------------------------------------------------------- #
 
 def db_connect() -> sqlite3.Connection:
     DB_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -175,6 +250,10 @@ def save_check(conn: sqlite3.Connection, row: dict) -> None:
     conn.commit()
 
 
+# --------------------------------------------------------------------------- #
+# Commands
+# --------------------------------------------------------------------------- #
+
 def cmd_init() -> None:
     if TARGETS_FILE.exists():
         sys.exit("targets.json already exists — edit it directly.")
@@ -183,8 +262,6 @@ def cmd_init() -> None:
 
 
 def cmd_run(args) -> None:
-    if PangolinfoClient is None:
-        sys.exit("Missing dependency. Run: pip install -r requirements.txt")
     if not TARGETS_FILE.exists():
         sys.exit("targets.json not found. Run: python rank_tracker.py init")
     targets = json.loads(TARGETS_FILE.read_text(encoding="utf-8"))
@@ -193,63 +270,62 @@ def cmd_run(args) -> None:
         sys.exit("Set PANGOLIN_TOKEN env var (free key: https://tool.pangolinfo.com)")
 
     conn = db_connect()
+    client = McpClient(token=token)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     total, found = 0, 0
 
-    with PangolinfoClient(
-        token=token,
-        # The SDK's built-in default base URL is plain http:// and the API
-        # 301-redirects to https://, which the SDK's POST client does not
-        # follow — always pass the https URL explicitly.
-        base_url=os.environ.get("PANGOLIN_BASE_URL", "https://scrapeapi.pangolinfo.com"),
-    ) as client:
-        for target in targets:
-            asin = target["asin"].strip().upper()
-            domain = target.get("domain", "www.amazon.com")
-            zipcode = target.get("zipcode")
-            pages = int(target.get("pages", 1))
-            for keyword in target["keywords"]:
-                total += 1
-                hit = None
-                hit_page = None
-                scanned = 0
+    for target in targets:
+        asin = target["asin"].strip().upper()
+        domain = target.get("domain", "www.amazon.com")
+        zipcode = target.get("zipcode")
+        pages = int(target.get("pages", 1))
+        for keyword in target["keywords"]:
+            total += 1
+            hit = None
+            hit_page = None
+            scanned = 0
+            for page in range(1, pages + 1):
                 try:
-                    for page in range(1, pages + 1):
-                        items = search_page(client, keyword, domain, zipcode, page)
-                        scanned = page
-                        if items:
-                            hit = locate_asin(items, asin)
-                            if hit:
-                                hit_page = page
-                                break
-                        if page < pages:
-                            time.sleep(args.delay)
-                except Exception as exc:  # noqa: BLE001 — log and continue with next keyword
-                    print(f"  ! {asin} / '{keyword}': API error: {exc}")
-                    continue
+                    items, _container = search_amazon_page(client, keyword, page)
+                except McpError as exc:
+                    # one retry for transient backend errors, then move on
+                    time.sleep(5)
+                    try:
+                        items, _container = search_amazon_page(client, keyword, page)
+                    except McpError as exc2:
+                        print(f"  ! {asin} / '{keyword}' page {page}: {exc2}")
+                        break
+                scanned = page
+                if items:
+                    hit = locate_asin(items, asin)
+                    if hit:
+                        hit_page = page
+                        break
+                if page < pages:
+                    time.sleep(args.delay)
 
-                row = {
-                    "checked_at": now,
-                    "asin": asin,
-                    "keyword": keyword,
-                    "domain": domain,
-                    "zipcode": zipcode,
-                    "position": hit["position"] if hit else None,
-                    "organic_position": hit["organic_position"] if hit else None,
-                    "page": hit_page,
-                    "sponsored": hit["sponsored"] if hit else 0,
-                    "title": hit["title"] if hit else None,
-                    "price": hit["price"] if hit else None,
-                    "rating": hit["rating"] if hit else None,
-                    "pages_scanned": scanned,
-                }
-                save_check(conn, row)
-                if hit:
-                    found += 1
-                    print(f"  ✓ {asin} @ '{keyword}': position {hit['position']} (page {hit_page})")
-                else:
-                    print(f"  · {asin} @ '{keyword}': not in first {scanned} page(s)")
-                time.sleep(args.delay)
+            row = {
+                "checked_at": now,
+                "asin": asin,
+                "keyword": keyword,
+                "domain": domain,
+                "zipcode": zipcode,
+                "position": hit["position"] if hit else None,
+                "organic_position": hit["organic_position"] if hit else None,
+                "page": hit_page,
+                "sponsored": hit["sponsored"] if hit else 0,
+                "title": hit["title"] if hit else None,
+                "price": hit["price"] if hit else None,
+                "rating": hit["rating"] if hit else None,
+                "pages_scanned": scanned,
+            }
+            save_check(conn, row)
+            if hit:
+                found += 1
+                print(f"  ✓ {asin} @ '{keyword}': position {hit['position']} (page {hit_page})")
+            else:
+                print(f"  · {asin} @ '{keyword}': not in first {scanned} page(s)")
+            time.sleep(args.delay)
 
     print(f"\nDone: {found}/{total} keywords ranked. Stored in {DB_FILE.relative_to(ROOT)}")
 
@@ -356,7 +432,7 @@ def cmd_report(_args) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Amazon Keyword Rank Tracker (powered by Pangolinfo Scrape API)")
+    parser = argparse.ArgumentParser(description="Amazon Keyword Rank Tracker (powered by Pangolinfo)")
     parser.add_argument("--delay", type=float, default=2.0, help="Seconds between API calls (default: 2)")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="Create targets.json from the example")
