@@ -187,11 +187,13 @@ This tool is one of several free tools in the **Pangolinfo open-source ecosystem
 
 ### 🛰️ More free tools by [@pangolinfoapi](https://github.com/pangolinfoapi)
 
-- [amazon-niche-finder](https://github.com/pangolinfoapi/amazon-niche-finder) —
+🏠 **Hub:** [All tools, landing pages & tutorials](https://pangolinfoapi.github.io/)
+
+- [amazon-niche-finder](https://pangolinfoapi.github.io/amazon-niche-finder/) —
   discover blue-ocean Amazon niches (low competition, high demand)
-- [google-trends-tracker](https://github.com/pangolinfoapi/google-trends-tracker) —
+- [google-trends-tracker](https://pangolinfoapi.github.io/google-trends-tracker/) —
   monitor keyword interest with Google Trends, daily
-- [amazon-review-analyzer](https://github.com/pangolinfoapi/amazon-review-analyzer) —
+- [amazon-review-analyzer](https://pangolinfoapi.github.io/amazon-review-analyzer/) —
   Amazon review sentiment + complaint/praise theme mining
 
 ### 🏗️ Built on the official Pangolinfo projects ([by @Pangolin-spg](https://github.com/Pangolin-spg))
