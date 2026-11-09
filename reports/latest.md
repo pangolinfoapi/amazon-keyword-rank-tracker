@@ -1,4 +1,4 @@
-# Amazon Keyword Rank Report — 2026-11-08
+# Amazon Keyword Rank Report — 2026-11-09
 
 Tracked with [amazon-keyword-rank-tracker](https://github.com/pangolinfoapi/amazon-keyword-rank-tracker) using the [Pangolinfo Scrape API](https://www.pangolinfo.com).
 
@@ -14,6 +14,8 @@ Tracked with [amazon-keyword-rank-tracker](https://github.com/pangolinfoapi/amaz
 
 | checked_at (UTC) | ASIN | keyword | position | organic | page |
 |---|---|---|---|---|---|
+| 2026-11-09T07:26:59+00:00 | B0DYTF8L2W | wireless earbuds | — | — | — |
+| 2026-11-09T07:26:59+00:00 | B0DYTF8L2W | bluetooth earbuds | — | — | — |
 | 2026-11-08T06:49:25+00:00 | B0DYTF8L2W | wireless earbuds | — | — | — |
 | 2026-11-08T06:49:25+00:00 | B0DYTF8L2W | bluetooth earbuds | — | — | — |
 | 2026-11-07T06:42:43+00:00 | B0DYTF8L2W | wireless earbuds | — | — | — |
@@ -212,5 +214,3 @@ Tracked with [amazon-keyword-rank-tracker](https://github.com/pangolinfoapi/amaz
 | 2026-08-01T04:16:29+00:00 | B0DYTF8L2W | bluetooth earbuds | — | — | — |
 | 2026-07-31T04:16:40+00:00 | B0DYTF8L2W | wireless earbuds | — | — | — |
 | 2026-07-31T04:16:40+00:00 | B0DYTF8L2W | bluetooth earbuds | — | — | — |
-| 2026-07-30T03:50:31+00:00 | B0DYTF8L2W | wireless earbuds | — | — | — |
-| 2026-07-30T03:50:31+00:00 | B0DYTF8L2W | bluetooth earbuds | — | — | — |
